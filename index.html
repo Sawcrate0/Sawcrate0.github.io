@@ -1,7 +1,50 @@
 <!DOCTYPE html>
-<html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Affichage CSV</title>
+</head>
 <body>
-<h1>Hello World</h1>
-<p>I'm hosted with GitHub Pages.</p>
+  <h1>Lecture d'un CSV</h1>
+  <div id="csv-content"></div>
+
+  <script>
+    // Chemin vers ton CSV. À adapter selon ton dépôt et le nom exact du fichier.
+    const csvFile = 'data/2025_01_06_11h00.csv';
+
+    // Fonction qui lit un CSV et retourne un tableau (array) de lignes
+    function parseCSV(text) {
+      const lines = text.trim().split('\n');
+      // Chaque ligne est découpée en colonnes par la virgule
+      return lines.map(line => line.split(','));
+    }
+
+    // Affiche un tableau HTML à partir d'un tableau de données
+    function displayTable(csvArray) {
+      let html = '<table border="1">';
+      csvArray.forEach(row => {
+        html += '<tr>';
+        row.forEach(cell => {
+          html += `<td>${cell}</td>`;
+        });
+        html += '</tr>';
+      });
+      html += '</table>';
+
+      // Injection dans la page
+      document.getElementById('csv-content').innerHTML = html;
+    }
+
+    // Récupère et traite le CSV
+    fetch(csvFile)
+      .then(response => response.text())
+      .then(text => {
+        const csvData = parseCSV(text);
+        displayTable(csvData);
+      })
+      .catch(error => {
+        console.error('Erreur lors du chargement du fichier CSV :', error);
+      });
+  </script>
 </body>
 </html>
