@@ -2,163 +2,272 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <title>Graph Temp/Hum</title>
-  <!-- Import Chart.js depuis un CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <title>Graph Temp/Hum (avec granularité)</title>
+  <!-- Moment.js (pour la gestion du temps) -->
+  <script src="https://cdn.jsdelivr.net/npm/moment@2.29.1"></script>
+  <!-- Chart.js 3.x -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1"></script>
+  <!-- Adaptateur officiel Moment pour Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.0"></script>
+
   <style>
     body {
       font-family: Arial, sans-serif;
       margin: 20px;
     }
     #chart-container {
-      width: 90%;
-      max-width: 800px;
+      width: 95%;
+      max-width: 900px;
       margin: 20px auto;
     }
-    button {
+    .controls {
       margin-bottom: 1em;
+    }
+    .controls select {
+      margin-right: 10px;
     }
   </style>
 </head>
 <body>
   <h1>Visualisation Température / Humidité</h1>
 
-  <p>
-    <button id="btn-load">Charger / Mettre à jour</button> 
+  <div class="controls">
+    <label for="granularity-select"><strong>Granularité :</strong></label>
+    <select id="granularity-select">
+      <option value="raw">Brut (toutes les mesures)</option>
+      <option value="hour">Heure</option>
+      <option value="quarter">Quart d’heure</option>
+      <option value="daily">Jour</option>
+    </select>
+    <button id="btn-load">Charger / Mettre à jour</button>
     <span id="status" style="margin-left:10px; color:blue;"></span>
-  </p>
+  </div>
 
   <div id="chart-container">
     <canvas id="myChart"></canvas>
   </div>
 
   <script>
-    // Variable globale pour stocker toutes les mesures (temp, hum, date)
-    let allData = [];
-    // Référence au chart pour le re-détruire ou recharger
-    let myChart = null;
+    const listFileUrl = 'list_of_csv.txt';  // Fichier qui référence tous les CSV
+    let allData = [];                       // Tableau global (toutes les mesures brutes)
+    let myChart = null;                     // Référence au graphique Chart.js
 
-    // Au clic, on charge la liste des CSV, puis on charge/parse chaque CSV, on dessine le graphe
+    // -------------------------------------------------------------------------
+    // 1) Quand on clique sur "Charger / Mettre à jour"
+    // -------------------------------------------------------------------------
     document.getElementById('btn-load').addEventListener('click', async () => {
-      document.getElementById('status').textContent = "Chargement en cours...";
-      allData = []; // on reset
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = "Chargement...";
 
       try {
-        // 1) Récupérer la liste des CSV depuis list_of_csv.txt
-        const listResponse = await fetch('list_of_csv.txt');
-        if (!listResponse.ok) {
-          throw new Error(`Impossible de charger list_of_csv.txt (status=${listResponse.status})`);
-        }
-        const listText = await listResponse.text();
-        const csvPaths = listText.trim().split('\n').map(l => l.trim()).filter(l => l);
+        // (a) Charger la liste des CSV et parser le tout
+        await loadAllData();
 
-        if (!csvPaths.length) {
-          document.getElementById('status').textContent = "Aucun CSV listé dans list_of_csv.txt.";
-          return;
-        }
+        // (b) Récupérer la granularité
+        const gran = document.getElementById('granularity-select').value;
 
-        // 2) Charger chaque CSV et parser
-        for (const path of csvPaths) {
-          await loadAndParseCsv(path);
+        // (c) Agréger en fonction de la granularité choisie
+        let aggregatedData = [];
+        if (gran === 'raw') {
+          aggregatedData = allData;  // Pas d'agrégation
+        } else {
+          aggregatedData = aggregateData(allData, gran);
         }
 
-        // 3) Trier allData par date
-        allData.sort((a, b) => a.date - b.date);
+        // (d) Construire le graphe Chart.js
+        buildChart(aggregatedData);
 
-        // 4) Construire le graphe (temp/hum vs. date)
-        buildChart(allData);
-
-        document.getElementById('status').textContent = 
-          `OK : ${allData.length} mesures chargées depuis ${csvPaths.length} fichiers.`;
-
+        statusEl.textContent = `OK : ${aggregatedData.length} points (granularité = ${gran}).`;
       } catch (err) {
         console.error(err);
-        document.getElementById('status').textContent = "Erreur : " + err.message;
+        statusEl.textContent = "Erreur : " + err.message;
       }
     });
 
-    // Fonction pour charger et parser un CSV donné
-    async function loadAndParseCsv(csvUrl) {
-      const resp = await fetch(csvUrl);
+    // -------------------------------------------------------------------------
+    // 2) Charger la liste des CSV (list_of_csv.txt) + charger/parse chaque CSV
+    // -------------------------------------------------------------------------
+    async function loadAllData() {
+      allData = [];
+
+      // 2.a) Récupérer la liste
+      const resp = await fetch(listFileUrl);
       if (!resp.ok) {
-        console.warn("Impossible de charger le CSV :", csvUrl);
-        return;
+        throw new Error(`Impossible de charger ${listFileUrl} (status=${resp.status})`);
       }
-      const text = await resp.text();
-      parseCsv(text);
+      const txt = await resp.text();
+      const csvPaths = txt.trim().split('\n').map(l => l.trim()).filter(l => l);
+
+      // 2.b) Charger chaque CSV
+      for (const path of csvPaths) {
+        await loadOneCsv(path);
+      }
+
+      // 2.c) Trier allData par date
+      allData.sort((a, b) => a.date - b.date);
     }
 
-    // Parse le contenu CSV et stocke dans allData
-    // On suppose : 1ère ligne d'entête : "Temperature (C), Humidity (%), Date and Time"
-    function parseCsv(raw) {
-      const lines = raw.trim().split('\n');
-      let startIndex = 0;
+    // Charge un CSV et l'ajoute à allData
+    async function loadOneCsv(csvUrl) {
+      const resp = await fetch(csvUrl);
+      if (!resp.ok) {
+        console.warn(`Impossible de charger ${csvUrl}`);
+        return;
+      }
+      const raw = await resp.text();
+      parseCsv(raw);
+    }
 
-      // Vérifier si la 1ère ligne contient "Temperature"
+    // Parse un CSV brut (Texte) et l'insère dans allData
+    // Suppose : "Temperature (C),Humidity (%),Date and Time"
+    function parseCsv(text) {
+      const lines = text.trim().split('\n');
+
+      // Repérer s'il y a une en-tête à ignorer
+      let startIndex = 0;
       if (lines[0].toLowerCase().includes('temperature')) {
-        startIndex = 1; // on saute l'en-tête
+        startIndex = 1; // saute la 1ère ligne
       }
 
       for (let i = startIndex; i < lines.length; i++) {
         const row = lines[i].split(',');
-        if (row.length < 3) continue; // format invalide ?
+        if (row.length < 3) continue;
 
         const tempC = parseFloat(row[0]);
         const hum = parseFloat(row[1]);
-        // On convertit "2025-01-06 15:36:00" en objet Date
-        const dateStr = row[2].trim().replace(' ', 'T'); 
+        // "2025-01-06 15:36:00" => on insère un 'T' => "2025-01-06T15:36:00"
+        const dateStr = row[2].trim().replace(' ', 'T');
         const dateObj = new Date(dateStr);
 
         if (!isNaN(tempC) && !isNaN(hum) && !isNaN(dateObj.getTime())) {
-          allData.push({ 
-            date: dateObj,
-            temp: tempC,
-            humidity: hum 
-          });
+          allData.push({ date: dateObj, temp: tempC, humidity: hum });
         }
       }
     }
 
-    // Construit un graphe Chart.js
+    // -------------------------------------------------------------------------
+    // 3) Agrégation des données (heures, quarts d’heure, jours)
+    // -------------------------------------------------------------------------
+    function aggregateData(dataArray, mode) {
+      // On va créer un objet { key -> { sumTemp, sumHum, count, dateRef } }
+      const aggregator = {};
+
+      dataArray.forEach(item => {
+        const d = item.date;
+        let key = "";
+
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const hour = String(d.getHours()).padStart(2, '0');
+        const min = d.getMinutes();
+
+        if (mode === 'hour') {
+          // Ex : "2025-01-06 15"
+          key = `${y}-${m}-${day} ${hour}`;
+        } else if (mode === 'quarter') {
+          // On calcule le quart d'heure (0, 15, 30 ou 45)
+          const quarter = 15 * Math.floor(min / 15);
+          // Ex : "2025-01-06 15:00" ou "2025-01-06 15:15" etc.
+          key = `${y}-${m}-${day} ${hour}:${String(quarter).padStart(2, '0')}`;
+        } else if (mode === 'daily') {
+          // Ex : "2025-01-06"
+          key = `${y}-${m}-${day}`;
+        } 
+
+        // Initialisation si nécessaire
+        if (!aggregator[key]) {
+          aggregator[key] = {
+            sumTemp: 0,
+            sumHum: 0,
+            count: 0,
+            // On stocke une date "référence" => la première mesure par ex.
+            dateRef: new Date(item.date)
+          };
+        }
+
+        aggregator[key].sumTemp += item.temp;
+        aggregator[key].sumHum += item.humidity;
+        aggregator[key].count++;
+      });
+
+      // On reconstruit un tableau final
+      const result = [];
+      for (const k in aggregator) {
+        const obj = aggregator[k];
+        const avgTemp = obj.sumTemp / obj.count;
+        const avgHum = obj.sumHum / obj.count;
+        result.push({
+          date: obj.dateRef,  // la date "référence"
+          temp: avgTemp,
+          humidity: avgHum
+        });
+      }
+
+      // On trie par date
+      result.sort((a, b) => a.date - b.date);
+      return result;
+    }
+
+    // -------------------------------------------------------------------------
+    // 4) Construire le graphe Chart.js (axe X en time)
+    // -------------------------------------------------------------------------
     function buildChart(dataArray) {
+      // On prépare 2 jeux de points : un pour la température, un pour l’humidité
+      const tempData = dataArray.map(d => ({ x: d.date, y: d.temp }));
+      const humData  = dataArray.map(d => ({ x: d.date, y: d.humidity }));
+
       const ctx = document.getElementById('myChart').getContext('2d');
 
-      // Si un chart existe déjà, on le détruit
+      // Si un graphe existait déjà, on le détruit
       if (myChart) {
         myChart.destroy();
       }
 
-      // Construire les arrays pour l'affichage
-      const labels = dataArray.map(d => formatDate(d.date));
-      const temps = dataArray.map(d => d.temp);
-      const hums = dataArray.map(d => d.humidity);
-
       myChart = new Chart(ctx, {
         type: 'line',
         data: {
-          labels: labels,
           datasets: [
             {
-              label: 'Température (C)',
-              data: temps,
+              label: 'Température (°C)',
+              data: tempData,
               borderColor: 'red',
-              backgroundColor: 'rgba(255, 0, 0, 0.2)',
+              backgroundColor: 'rgba(255,0,0,0.2)',
               yAxisID: 'yTemp',
-              tension: 0.1,
+              tension: 0.1
             },
             {
               label: 'Humidité (%)',
-              data: hums,
+              data: humData,
               borderColor: 'blue',
-              backgroundColor: 'rgba(0, 0, 255, 0.2)',
+              backgroundColor: 'rgba(0,0,255,0.2)',
               yAxisID: 'yHum',
-              tension: 0.1,
+              tension: 0.1
             }
           ]
         },
         options: {
           responsive: true,
           scales: {
+            x: {
+              type: 'time',             // Axe temporel
+              time: {
+                unit: 'auto',          // Laisse Chart.js choisir la meilleure subdivision
+                displayFormats: {
+                  // Personnalise l’affichage des ticks si tu veux
+                  hour: 'DD/MM/YYYY HH:mm',
+                  minute: 'DD/MM HH:mm',
+                  day: 'DD/MM/YYYY'
+                }
+              },
+              adapters: {
+                // On utilise moment (chargé en haut) via chartjs-adapter-moment
+              },
+              title: {
+                display: true,
+                text: 'Date/Heure'
+              }
+            },
             yTemp: {
               type: 'linear',
               position: 'left',
@@ -182,16 +291,6 @@
           }
         }
       });
-    }
-
-    // Formate l'objet Date en "YYYY-MM-DD HH:MM"
-    function formatDate(dateObj) {
-      const y = dateObj.getFullYear();
-      const m = String(dateObj.getMonth()+1).padStart(2, '0');
-      const d = String(dateObj.getDate()).padStart(2, '0');
-      const hh = String(dateObj.getHours()).padStart(2, '0');
-      const mm = String(dateObj.getMinutes()).padStart(2, '0');
-      return `${y}-${m}-${d} ${hh}:${mm}`;
     }
   </script>
 </body>
