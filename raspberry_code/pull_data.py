@@ -16,14 +16,26 @@ LOCAL_REPO_PATH = "Sawcrate0.github.io"
 DATA_FOLDER = "data"
 DEFAULT_START_TS = "2025-01-06 00:00:00"
 
-# -------------------------------------------------------------------
-# Programme principal (sans if __name__ == "__main__":)
-# -------------------------------------------------------------------
-
-print("[DEBUG] Démarrage du script push_data.py.")
+print("[DEBUG] Démarrage du script pull_data.py.")
 
 while True:
     print("\n=== Nouvelle itération de la boucle ===")
+
+    # 0) Se mettre à jour dès le début (pull)
+    print("[DEBUG] On se place dans le repo local et on fait un pull.")
+    try:
+        os.chdir(LOCAL_REPO_PATH)
+        # Option 1 : Merge par défaut (si config globale le permet)
+        # subprocess.run(["git", "pull", "origin", "main"], check=True)
+
+        # Option 2 : Forcer un rebase
+        subprocess.run(["git", "pull", "origin", "main", "--rebase"], check=True)
+        os.chdir("..")
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Le pull initial a échoué : {e}")
+        os.chdir("..")
+        # On arrête la boucle pour éviter de commiter sur un état divergent
+        break
 
     # 1) Charger le dernier timestamp envoyé
     try:
@@ -36,15 +48,15 @@ while True:
         last_sent_ts = datetime.strptime(DEFAULT_START_TS, "%Y-%m-%d %H:%M:%S")
     except Exception as e:
         print(f"[ERROR] Problème avec '{LAST_VALUE_FILE}' : {e}")
-        raise e
+        break
 
-    # 2) Lire sensor_data.csv pour récupérer les lignes postérieures à last_sent_ts
+    # 2) Lire sensor_data.csv pour récupérer les lignes postérieures
     new_rows = []
     if os.path.exists(CSV_SOURCE_FILE):
         print(f"[DEBUG] Lecture du fichier '{CSV_SOURCE_FILE}'.")
         with open(CSV_SOURCE_FILE, "r", newline='') as csvfile:
             reader = csv.reader(csvfile)
-            header = next(reader, None)  # Lecture de l'en-tête (on l'ignore ou on s'en sert si besoin)
+            header = next(reader, None)
             for row in reader:
                 # row[2] = "YYYY-MM-DD HH:MM:SS"
                 row_ts = datetime.strptime(row[2], "%Y-%m-%d %H:%M:%S")
@@ -54,19 +66,17 @@ while True:
     else:
         print(f"[WARN] Le fichier '{CSV_SOURCE_FILE}' n'existe pas. Aucun envoi possible.")
 
-    # 3) S'il y a des nouvelles lignes, on crée un CSV daté et on push
+    # 3) Créer et pousser le nouveau CSV si on a des données
     if new_rows:
         now = datetime.now()
         csv_name = now.strftime("%Y_%m_%d_%Hh%M") + ".csv"
 
-        # Création du dossier data/ si nécessaire
         full_data_path = os.path.join(LOCAL_REPO_PATH, DATA_FOLDER)
         if not os.path.exists(full_data_path):
             os.makedirs(full_data_path)
         
         full_csv_path = os.path.join(full_data_path, csv_name)
 
-        # Écriture du nouveau CSV
         try:
             with open(full_csv_path, "w", newline='') as f_out:
                 writer = csv.writer(f_out)
@@ -74,43 +84,33 @@ while True:
                 writer.writerows(new_rows)
             print(f"[DEBUG] Nouveau CSV créé : {full_csv_path}")
         except Exception as e:
-            print(f"[ERROR] Échec lors de l'écriture du fichier CSV : {e}")
-            raise e
+            print(f"[ERROR] Échec d'écriture du CSV : {e}")
+            # Pas de push, on arrête
+            break
 
-        # Mise à jour de last_value_sent.txt avec le dernier timestamp qu’on a envoyé
+        # Mettre à jour last_value_sent.txt
         last_ts_in_batch = new_rows[-1][2]
         with open(LAST_VALUE_FILE, "w") as f_txt:
             f_txt.write(last_ts_in_batch)
         print(f"[DEBUG] Mise à jour de '{LAST_VALUE_FILE}' avec {last_ts_in_batch}")
 
-        # 4) Git pull/add/commit/push
-        print("[DEBUG] Passage des commandes Git.")
+        # 4) Git add/commit/push
+        print("[DEBUG] Git add/commit/push")
         try:
             os.chdir(LOCAL_REPO_PATH)
-
-            # a) Récupérer les dernières modifs du remote
-            subprocess.run(["git", "pull", "origin", "main"], check=True)
-
-            # b) Ajouter le nouveau CSV
             subprocess.run(["git", "add", os.path.join(DATA_FOLDER, csv_name)], check=True)
-
-            # c) Commit
             commit_message = f"Add new data file {csv_name}"
             subprocess.run(["git", "commit", "-m", commit_message], check=True)
-
-            # d) Push
             subprocess.run(["git", "push", "origin", "main"], check=True)
-
             print(f"[OK] Fichier envoyé sur GitHub : {csv_name}")
         except subprocess.CalledProcessError as e:
             print(f"[ERROR] La commande Git a échoué : {e}")
         finally:
             os.chdir("..")
-
     else:
         print("[INFO] Aucune donnée nouvelle à pousser.")
 
-    # 5) Attente avant la prochaine itération
+    # 5) Pause avant la prochaine boucle
     print(f"[DEBUG] Pause de {INTERVAL_MINUTES} minutes.")
     try:
         time.sleep(INTERVAL_MINUTES * 60)
